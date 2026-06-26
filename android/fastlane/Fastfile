@@ -4,7 +4,6 @@ platform :android do
   desc "Build Flutter APK or AAB"
   lane :build_android do
     project_root = File.expand_path("../..", __dir__)
-
     artifact_type = (ENV["ARTIFACT_TYPE"] || "APK").upcase
 
     sh("cd #{project_root} && flutter pub get")
@@ -16,10 +15,9 @@ platform :android do
     end
   end
 
-  desc "Build Flutter APK/AAB and upload to Firebase App Distribution"
+  desc "Build Flutter APK/AAB. Upload APK to Firebase. Archive AAB only."
   lane :firebase_release do
     project_root = File.expand_path("../..", __dir__)
-
     artifact_type = (ENV["ARTIFACT_TYPE"] || "APK").upcase
 
     build_android
@@ -29,17 +27,24 @@ platform :android do
         project_root,
         "build/app/outputs/bundle/release/app-release.aab"
       )
-    else
-      artifact_path = File.join(
-        project_root,
-        "build/app/outputs/flutter-apk/app-release.apk"
-      )
+
+      UI.message("Artifact type: AAB")
+      UI.message("Checking artifact path: #{artifact_path}")
+      UI.user_error!("AAB not found at #{artifact_path}") unless File.exist?(artifact_path)
+
+      UI.important("AAB built successfully.")
+      UI.important("Skipping Firebase upload because this Firebase project is not linked to Google Play.")
+      next
     end
 
-    UI.message("Artifact type: #{artifact_type}")
-    UI.message("Checking artifact path: #{artifact_path}")
+    artifact_path = File.join(
+      project_root,
+      "build/app/outputs/flutter-apk/app-release.apk"
+    )
 
-    UI.user_error!("Artifact not found at #{artifact_path}") unless File.exist?(artifact_path)
+    UI.message("Artifact type: APK")
+    UI.message("Checking artifact path: #{artifact_path}")
+    UI.user_error!("APK not found at #{artifact_path}") unless File.exist?(artifact_path)
 
     success = false
     last_error = nil
@@ -51,10 +56,10 @@ platform :android do
         firebase_app_distribution(
           app: ENV["FIREBASE_ANDROID_APP_ID"],
           firebase_cli_token: ENV["FIREBASE_TOKEN"],
-          android_artifact_type: artifact_type,
+          android_artifact_type: "APK",
           android_artifact_path: artifact_path,
           groups: "testers",
-          release_notes: "SmartServe Flutter Android Jenkins build ##{ENV['BUILD_NUMBER'] || 'local'} - #{artifact_type}"
+          release_notes: "SmartServe Flutter Android Jenkins build ##{ENV['BUILD_NUMBER'] || 'local'} - APK"
         )
 
         success = true
