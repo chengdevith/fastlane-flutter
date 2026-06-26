@@ -3,15 +3,24 @@ default_platform(:android)
 platform :android do
   desc "Build Flutter APK only"
   lane :build_apk do
-    sh("cd .. && flutter pub get")
-    sh("cd .. && flutter build apk --release")
+    project_root = File.expand_path("../..", __dir__)
+
+    sh("cd #{project_root} && flutter pub get")
+    sh("cd #{project_root} && flutter build apk --release")
   end
 
   desc "Build Flutter APK and upload to Firebase App Distribution"
   lane :firebase_release do
+    project_root = File.expand_path("../..", __dir__)
+
     build_apk
 
-    apk_path = "../build/app/outputs/flutter-apk/app-release.apk"
+    apk_path = File.join(
+      project_root,
+      "build/app/outputs/flutter-apk/app-release.apk"
+    )
+
+    UI.message("Checking APK path: #{apk_path}")
     UI.user_error!("APK not found at #{apk_path}") unless File.exist?(apk_path)
 
     success = false
