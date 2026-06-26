@@ -1,4 +1,4 @@
-package com.example.smartserve_flutter
+package com.smartserve.mobile
 
 import io.flutter.embedding.android.FlutterActivity
 
