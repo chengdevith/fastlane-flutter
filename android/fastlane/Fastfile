@@ -1,19 +1,49 @@
 default_platform(:android)
 
 platform :android do
-  desc "Build Flutter APK and upload to Firebase App Distribution"
-  lane :firebase_release do
-    sh("cd .. && flutter clean")
+  desc "Build Flutter APK only"
+  lane :build_apk do
     sh("cd .. && flutter pub get")
     sh("cd .. && flutter build apk --release")
+  end
 
-    firebase_app_distribution(
-      app: ENV["FIREBASE_ANDROID_APP_ID"],
-      firebase_cli_token: ENV["FIREBASE_TOKEN"],
-      android_artifact_type: "APK",
-      android_artifact_path: "../build/app/outputs/flutter-apk/app-release.apk",
-      groups: "testers",
-      release_notes: "SmartServe Flutter Android Jenkins build ##{ENV['BUILD_NUMBER'] || 'local'}"
-    )
+  desc "Build Flutter APK and upload to Firebase App Distribution"
+  lane :firebase_release do
+    build_apk
+
+    apk_path = "../build/app/outputs/flutter-apk/app-release.apk"
+    UI.user_error!("APK not found at #{apk_path}") unless File.exist?(apk_path)
+
+    success = false
+    last_error = nil
+
+    (1..3).each do |attempt|
+      begin
+        UI.message("Firebase upload attempt #{attempt}/3")
+
+        firebase_app_distribution(
+          app: ENV["FIREBASE_ANDROID_APP_ID"],
+          firebase_cli_token: ENV["FIREBASE_TOKEN"],
+          android_artifact_type: "APK",
+          android_artifact_path: apk_path,
+          groups: "testers",
+          release_notes: "SmartServe Flutter Android Jenkins build ##{ENV['BUILD_NUMBER'] || 'local'}"
+        )
+
+        success = true
+        break
+      rescue => e
+        last_error = e
+        UI.important("Firebase upload failed on attempt #{attempt}/3")
+        UI.important(e.message)
+
+        if attempt < 3
+          UI.message("Retrying in 45 seconds...")
+          sleep(45)
+        end
+      end
+    end
+
+    UI.user_error!("Firebase upload failed after 3 attempts: #{last_error}") unless success
   end
 end
