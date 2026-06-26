@@ -1,0 +1,19 @@
+default_platform(:android)
+
+platform :android do
+  desc "Build Flutter APK and upload to Firebase App Distribution"
+  lane :firebase_release do
+    sh("cd .. && flutter clean")
+    sh("cd .. && flutter pub get")
+    sh("cd .. && flutter build apk --release")
+
+    firebase_app_distribution(
+      app: ENV["FIREBASE_ANDROID_APP_ID"],
+      firebase_cli_token: ENV["FIREBASE_TOKEN"],
+      android_artifact_type: "APK",
+      android_artifact_path: "../build/app/outputs/flutter-apk/app-release.apk",
+      groups: "testers",
+      release_notes: "SmartServe Flutter Android Jenkins build ##{ENV['BUILD_NUMBER'] || 'local'}"
+    )
+  end
+end
