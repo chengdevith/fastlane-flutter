@@ -1,11 +1,49 @@
 pipeline {
-    agent { label 'mac' }
+    agent none
+
+    options {
+        skipDefaultCheckout(true)
+    }
 
     parameters {
         choice(
-            name: 'ARTIFACT_TYPE',
+            name: 'PLATFORM',
+            choices: ['ANDROID', 'IOS', 'BOTH'],
+            description: 'Choose platform to build'
+        )
+
+        choice(
+            name: 'BUILD_TYPE',
+            choices: ['DEBUG', 'RELEASE'],
+            description: 'Choose debug or release build'
+        )
+
+        choice(
+            name: 'DISTRIBUTION',
+            choices: ['NONE', 'FIREBASE', 'STORE'],
+            description: 'Choose distribution target'
+        )
+
+        choice(
+            name: 'ANDROID_ARTIFACT',
             choices: ['APK', 'AAB'],
-            description: 'Choose Android artifact type to build and upload'
+            description: 'Android artifact type'
+        )
+        string(
+                name: 'VERSION_NAME',
+                defaultValue: '1.0.0',
+                description: 'App version name'
+        )
+
+        string(
+            name: 'VERSION_CODE',
+            defaultValue: '',
+            description: 'Android version code. Empty = Jenkins BUILD_NUMBER'
+        )
+
+        base64File(
+            name: 'RELEASE_NOTES_FILE',
+            description: 'Optional release notes file for Firebase'
         )
     }
 
@@ -17,86 +55,180 @@ pipeline {
     }
 
     stages {
-        stage('Check Environment') {
+        stage('Validate Parameters') {
+            agent { label 'mac' }
             steps {
-                sh 'pwd'
-                sh 'which flutter'
-                sh 'flutter --version'
-                sh 'java -version'
-                sh 'ruby -v'
-                sh 'bundle -v'
-                sh 'echo "Selected artifact type: ${ARTIFACT_TYPE}"'
-            }
-        }
+                script {
+                    if (params.BUILD_TYPE == 'DEBUG' && params.DISTRIBUTION != 'NONE') {
+                        error("DEBUG build should use DISTRIBUTION=NONE")
+                    }
 
-        stage('Flutter Dependencies') {
-            steps {
-                sh 'flutter pub get'
-            }
-        }
+                    if (params.DISTRIBUTION == 'STORE' && params.BUILD_TYPE != 'RELEASE') {
+                        error("STORE distribution requires RELEASE build")
+                    }
 
-        stage('Install Fastlane Dependencies') {
-            steps {
-                dir('android') {
-                    sh 'bundle config set path vendor/bundle'
-                    sh 'bundle install'
+                    if (params.DISTRIBUTION == 'FIREBASE' && params.ANDROID_ARTIFACT != 'APK') {
+                        error("Firebase distribution should use ANDROID_ARTIFACT=APK unless Firebase is linked to Google Play.")
+                    }
                 }
             }
         }
 
-        stage('Build and Upload to Firebase') {
+        stage('Prepare Version and Release Notes') {
+            agent { label 'mac' }
+
             steps {
-                dir('android') {
-                    withCredentials([
-                        string(credentialsId: 'firebase-android-app-id', variable: 'FIREBASE_ANDROID_APP_ID'),
-                        string(credentialsId: 'firebase-token', variable: 'FIREBASE_TOKEN')
-                    ]) {
-                        sh '''
-                            echo "Building artifact type: ${ARTIFACT_TYPE}"
-                            ARTIFACT_TYPE=${ARTIFACT_TYPE} bundle exec fastlane firebase_release
-                        '''
+                script {
+                    env.APP_VERSION_NAME = params.VERSION_NAME?.trim() ?: "1.0.${env.BUILD_NUMBER}"
+                    env.APP_VERSION_CODE = params.VERSION_CODE?.trim() ?: env.BUILD_NUMBER
+                }
+
+                withFileParameter(name: 'RELEASE_NOTES_FILE', allowNoFile: true) {
+                    sh '''
+                        if [ -n "$RELEASE_NOTES_FILE" ] && [ -f "$RELEASE_NOTES_FILE" ]; then
+                            cp "$RELEASE_NOTES_FILE" release-notes.txt
+                            echo "Using uploaded release notes:"
+                            cat release-notes.txt
+                        else
+                            echo "SmartServe build #${BUILD_NUMBER}" > release-notes.txt
+                            echo "No release notes file uploaded. Generated default release-notes.txt"
+                        fi
+                    '''
+                }
+
+                stash name: 'release-notes', includes: 'release-notes.txt'
+            }
+        }
+
+        stage('Parallel Build') {
+            steps {
+                script {
+                    def branches = [:]
+
+                    if (params.PLATFORM == 'ANDROID' || params.PLATFORM == 'BOTH') {
+                        branches['Android Build'] = {
+                            node('mac') {
+                                ws("${env.WORKSPACE}@android") {
+                                    checkout scm
+                                    unstash 'release-notes'
+
+                                    sh 'flutter --version'
+                                    sh 'flutter pub get'
+
+                                    dir('android') {
+                                        sh 'bundle config set path vendor/bundle'
+                                        sh 'bundle install'
+
+                                        if (params.BUILD_TYPE == 'DEBUG') {
+                                            sh 'cd .. && flutter build apk --debug'
+                                        } else {
+                                            if (params.DISTRIBUTION == 'FIREBASE') {
+                                                withCredentials([
+                                                    string(credentialsId: 'firebase-android-app-id', variable: 'FIREBASE_ANDROID_APP_ID'),
+                                                    string(credentialsId: 'firebase-token', variable: 'FIREBASE_TOKEN')
+                                                ]) {
+                                                    sh '''
+                                                        ARTIFACT_TYPE=APK \
+                                                        BUILD_TYPE=${BUILD_TYPE} \
+                                                        VERSION_NAME=${APP_VERSION_NAME} \
+                                                        VERSION_CODE=${APP_VERSION_CODE} \
+                                                        RELEASE_NOTES_PATH="release-notes.txt" \
+                                                        bundle exec fastlane firebase_release
+                                                    '''
+                                                }
+                                            } else if (params.DISTRIBUTION == 'STORE') {
+                                                sh '''
+                                                    ARTIFACT_TYPE=AAB \
+                                                    BUILD_TYPE=${BUILD_TYPE} \
+                                                    VERSION_NAME=${APP_VERSION_NAME} \
+                                                    VERSION_CODE=${APP_VERSION_CODE} \
+                                                    bundle exec fastlane build_android
+                                                '''
+                                            } else {
+                                                sh '''
+                                                    ARTIFACT_TYPE=${ANDROID_ARTIFACT} \
+                                                    VERSION_NAME=${APP_VERSION_NAME} \
+                                                    VERSION_CODE=${APP_VERSION_CODE} \
+                                                    bundle exec fastlane build_android
+                                                '''
+                                            }
+                                        }
+                                    }
+
+                                    sh '''
+                                        mkdir -p artifacts
+
+                                        find build/app/outputs -name "*.apk" -type f -exec cp {} artifacts/ \\; || true
+                                        find build/app/outputs -name "*.aab" -type f -exec cp {} artifacts/ \\; || true
+
+                                        ls -lh artifacts || true
+                                    '''
+
+                                    archiveArtifacts artifacts: 'artifacts/*', allowEmptyArchive: true
+                                }
+                            }
+                        }
                     }
+
+                    if (params.PLATFORM == 'IOS' || params.PLATFORM == 'BOTH') {
+                        branches['iOS Build'] = {
+                            node('mac') {
+                                ws("${env.WORKSPACE}@ios") {
+                                    checkout scm
+
+                                    sh 'flutter --version'
+                                    sh 'flutter pub get'
+
+                                    if (params.BUILD_TYPE == 'DEBUG') {
+                                        sh '''
+                                            flutter build ios --simulator --debug
+                                        '''
+                                    } else {
+                                        if (params.DISTRIBUTION == 'NONE') {
+                                            sh '''
+                                                echo "Release iOS build requires Apple signing."
+                                                echo "Skipping until Apple Developer Team is configured."
+                                            '''
+                                        } else if (params.DISTRIBUTION == 'FIREBASE') {
+                                            sh '''
+                                                echo "iOS Firebase requires signed IPA."
+                                                echo "You need Apple Developer Team, certificate, and provisioning profile."
+                                                exit 1
+                                            '''
+                                        } else if (params.DISTRIBUTION == 'STORE') {
+                                            sh '''
+                                                echo "iOS Store/TestFlight requires Apple Developer Team and App Store Connect credentials."
+                                                exit 1
+                                            '''
+                                        }
+                                    }
+
+                                    sh '''
+                                        mkdir -p artifacts
+                                        find build/ios -name "*.app" -type d -print || true
+                                        find build/ios -name "*.ipa" -type f -exec cp {} artifacts/ \\; || true
+                                        ls -lh artifacts || true
+                                    '''
+
+                                    archiveArtifacts artifacts: 'artifacts/*', allowEmptyArchive: true
+                                }
+                            }
+                        }
+                    }
+
+                    parallel branches
                 }
             }
         }
     }
 
     post {
-        always {
-            sh '''
-                mkdir -p artifacts
-                mkdir -p "$HOME/Desktop/jenkins-artifacts/flutter-android"
-
-                if [ "$ARTIFACT_TYPE" = "AAB" ]; then
-                    ARTIFACT_FILE=$(find build/app/outputs/bundle/release -name "*.aab" -type f 2>/dev/null | head -1 || true)
-                    EXT="aab"
-                else
-                    ARTIFACT_FILE=$(find build/app/outputs/flutter-apk -name "*.apk" -type f 2>/dev/null | head -1 || true)
-                    EXT="apk"
-                fi
-
-                if [ -n "$ARTIFACT_FILE" ]; then
-                    ARTIFACT_NAME="smartserve-flutter-${BUILD_NUMBER}.${EXT}"
-                    cp -f "$ARTIFACT_FILE" "artifacts/$ARTIFACT_NAME"
-                    cp -f "$ARTIFACT_FILE" "$HOME/Desktop/jenkins-artifacts/flutter-android/$ARTIFACT_NAME"
-
-                    echo "Artifact copied:"
-                    ls -lh artifacts/
-                    ls -lh "$HOME/Desktop/jenkins-artifacts/flutter-android/"
-                else
-                    echo "No artifact found for ARTIFACT_TYPE=$ARTIFACT_TYPE"
-                fi
-            '''
-
-            archiveArtifacts artifacts: 'artifacts/*', allowEmptyArchive: true
-        }
-
         success {
-            echo 'Flutter Android build and Firebase upload completed successfully.'
+            echo 'Pipeline completed successfully.'
         }
 
         failure {
-            echo 'Flutter Android build or Firebase upload failed.'
+            echo 'Pipeline failed.'
         }
     }
 }

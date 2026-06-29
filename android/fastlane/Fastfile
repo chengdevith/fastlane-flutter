@@ -1,26 +1,102 @@
 default_platform(:android)
 
+def flutter_project_root
+  File.expand_path("../..", __dir__)
+end
+
+def read_release_notes(project_root)
+  default_notes = "SmartServe Flutter Android Jenkins build ##{ENV['BUILD_NUMBER'] || 'local'}"
+
+  release_notes_path = ENV["RELEASE_NOTES_PATH"].to_s.strip
+  return default_notes if release_notes_path.empty?
+
+  possible_paths = [
+    release_notes_path,
+    File.expand_path(release_notes_path, Dir.pwd),
+    File.expand_path(release_notes_path, project_root),
+    File.expand_path(release_notes_path, __dir__)
+  ].uniq
+
+  found_path = possible_paths.find { |path| File.exist?(path) }
+
+  if found_path
+    UI.message("Using release notes from: #{found_path}")
+    File.read(found_path)
+  else
+    UI.important("Release notes file not found. Using default release notes.")
+    default_notes
+  end
+end
+
 platform :android do
   desc "Build Flutter APK or AAB"
   lane :build_android do
-    project_root = File.expand_path("../..", __dir__)
+    project_root = flutter_project_root
+
     artifact_type = (ENV["ARTIFACT_TYPE"] || "APK").upcase
+    build_type = (ENV["BUILD_TYPE"] || "RELEASE").upcase
+
+    version_name = ENV["VERSION_NAME"] || "1.0.0"
+    version_code = ENV["VERSION_CODE"] || ENV["BUILD_NUMBER"] || "1"
+
+    UI.user_error!("VERSION_CODE must be numeric") unless version_code.match?(/^\d+$/)
+
+    UI.message("Project root: #{project_root}")
+    UI.message("Build type: #{build_type}")
+    UI.message("Artifact type: #{artifact_type}")
+    UI.message("Version name: #{version_name}")
+    UI.message("Version code: #{version_code}")
 
     sh("cd #{project_root} && flutter pub get")
 
-    if artifact_type == "AAB"
-      sh("cd #{project_root} && flutter build appbundle --release")
+    if build_type == "DEBUG"
+      UI.user_error!("DEBUG build only supports APK, not AAB") if artifact_type == "AAB"
+
+      sh(
+        "cd #{project_root} && flutter build apk --debug " \
+        "--build-name=#{version_name} " \
+        "--build-number=#{version_code}"
+      )
     else
-      sh("cd #{project_root} && flutter build apk --release")
+      if artifact_type == "AAB"
+        sh(
+          "cd #{project_root} && flutter build appbundle --release " \
+          "--build-name=#{version_name} " \
+          "--build-number=#{version_code}"
+        )
+      else
+        sh(
+          "cd #{project_root} && flutter build apk --release " \
+          "--build-name=#{version_name} " \
+          "--build-number=#{version_code}"
+        )
+      end
     end
   end
 
   desc "Build Flutter APK/AAB. Upload APK to Firebase. Archive AAB only."
   lane :firebase_release do
-    project_root = File.expand_path("../..", __dir__)
+    project_root = flutter_project_root
+
     artifact_type = (ENV["ARTIFACT_TYPE"] || "APK").upcase
+    build_type = (ENV["BUILD_TYPE"] || "RELEASE").upcase
 
     build_android
+
+    if build_type == "DEBUG"
+      artifact_path = File.join(
+        project_root,
+        "build/app/outputs/flutter-apk/app-debug.apk"
+      )
+
+      UI.message("Artifact type: DEBUG APK")
+      UI.message("Checking artifact path: #{artifact_path}")
+      UI.user_error!("Debug APK not found at #{artifact_path}") unless File.exist?(artifact_path)
+
+      UI.important("Debug APK built successfully.")
+      UI.important("Skipping Firebase upload for DEBUG build.")
+      next
+    end
 
     if artifact_type == "AAB"
       artifact_path = File.join(
@@ -42,9 +118,11 @@ platform :android do
       "build/app/outputs/flutter-apk/app-release.apk"
     )
 
-    UI.message("Artifact type: APK")
+    UI.message("Artifact type: RELEASE APK")
     UI.message("Checking artifact path: #{artifact_path}")
     UI.user_error!("APK not found at #{artifact_path}") unless File.exist?(artifact_path)
+
+    release_notes = read_release_notes(project_root)
 
     success = false
     last_error = nil
@@ -59,7 +137,7 @@ platform :android do
           android_artifact_type: "APK",
           android_artifact_path: artifact_path,
           groups: "testers",
-          release_notes: "SmartServe Flutter Android Jenkins build ##{ENV['BUILD_NUMBER'] || 'local'} - APK"
+          release_notes: release_notes
         )
 
         success = true
