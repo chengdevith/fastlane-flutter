@@ -41,9 +41,10 @@ pipeline {
             description: 'Android version code. Empty = Jenkins BUILD_NUMBER'
         )
 
-        base64File(
-            name: 'RELEASE_NOTES_FILE',
-            description: 'Optional release notes file for Firebase'
+        text(
+            name: 'RELEASE_NOTES',
+            defaultValue: 'SmartServe Flutter build',
+            description: 'Release notes for Firebase'
         )
     }
 
@@ -83,18 +84,14 @@ pipeline {
                     env.APP_VERSION_CODE = params.VERSION_CODE?.trim() ?: env.BUILD_NUMBER
                 }
 
-                withFileParameter(name: 'RELEASE_NOTES_FILE', allowNoFile: true) {
-                    sh '''
-                        if [ -n "$RELEASE_NOTES_FILE" ] && [ -f "$RELEASE_NOTES_FILE" ]; then
-                            cp "$RELEASE_NOTES_FILE" release-notes.txt
-                            echo "Using uploaded release notes:"
-                            cat release-notes.txt
-                        else
-                            echo "SmartServe build #${BUILD_NUMBER}" > release-notes.txt
-                            echo "No release notes file uploaded. Generated default release-notes.txt"
-                        fi
-                    '''
-                }
+                sh '''
+                    cat > release-notes.txt <<EOF
+                    ${RELEASE_NOTES}
+                    EOF
+
+                    echo "Using release notes:"
+                    cat release-notes.txt
+                '''
 
                 stash name: 'release-notes', includes: 'release-notes.txt'
             }
