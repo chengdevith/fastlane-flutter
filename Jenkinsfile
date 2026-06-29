@@ -52,8 +52,7 @@ pipeline {
         FLUTTER_HOME = '/Users/enz/development/flutter'
         ANDROID_HOME = '/Users/enz/Library/Android/sdk'
         ANDROID_SDK_ROOT = '/Users/enz/Library/Android/sdk'
-        PATH = "${FLUTTER_HOME}/bin:/opt/homebrew/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${env.PATH}"
-    }
+        PATH = "${FLUTTER_HOME}/bin:/opt/homebrew/bin:/usr/local/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"    }
 
     stages {
         stage('Validate Parameters') {
@@ -82,16 +81,19 @@ pipeline {
                 script {
                     env.APP_VERSION_NAME = params.VERSION_NAME?.trim() ?: "1.0.${env.BUILD_NUMBER}"
                     env.APP_VERSION_CODE = params.VERSION_CODE?.trim() ?: env.BUILD_NUMBER
-                }
 
-                sh '''
-                    cat > release-notes.txt <<EOF
-                    ${RELEASE_NOTES}
-                    EOF
+                    def notes = params.RELEASE_NOTES?.trim()
+                    if (!notes) {
+                        notes = "SmartServe build #${env.BUILD_NUMBER}"
+                    }
 
+                    writeFile file: 'release-notes.txt', text: notes + "\n"
+
+                    echo "Version name: ${env.APP_VERSION_NAME}"
+                    echo "Version code: ${env.APP_VERSION_CODE}"
                     echo "Using release notes:"
-                    cat release-notes.txt
-                '''
+                    echo readFile('release-notes.txt')
+                }
 
                 stash name: 'release-notes', includes: 'release-notes.txt'
             }
@@ -117,7 +119,13 @@ pipeline {
                                         sh 'bundle install'
 
                                         if (params.BUILD_TYPE == 'DEBUG') {
-                                            sh 'cd .. && flutter build apk --debug'
+                                            sh '''
+                                                ARTIFACT_TYPE=APK \
+                                                BUILD_TYPE=DEBUG \
+                                                VERSION_NAME=${APP_VERSION_NAME} \
+                                                VERSION_CODE=${APP_VERSION_CODE} \
+                                                bundle exec fastlane build_android
+                                            '''
                                         } else {
                                             if (params.DISTRIBUTION == 'FIREBASE') {
                                                 withCredentials([
